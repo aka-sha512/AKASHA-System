@@ -2,9 +2,12 @@ include("process.jl")
 
 const wait_cost = 0.1
 const busy_bonus = 0.1
+const queue_cap = 10
 
 mutable struct Env
     rng::MersenneTwister
+    advance_chance::Float64
+    job_time::UnitRange{Int}
     waiting_jobs::Vector{Int}
     resource_queues::Vector{Vector{Int}}
     sequence::Int
@@ -15,17 +18,22 @@ mutable struct Env
     reward::Float64
 end
 
-Env(resource_count::Int, sequence_count::Int) =
-    Env(MersenneTwister(static_SEED), Int[], [Int[] for _ in 1:resource_count],
+# workload defaults to process.jl's constants; pass others to test generalization
+Env(resource_count::Int, sequence_count::Int;
+    advance_chance::Float64=advance_chance, job_time::UnitRange{Int}=job_time) =
+    Env(MersenneTwister(static_SEED), advance_chance, job_time, Int[], [Int[] for _ in 1:resource_count],
         0, sequence_count, 0, 0, 0, 0.0)
 
 # state: waiting count, next job's duration, then per resource its queue length and work left
+# state: waiting count, next job's duration, then per resource its queue length and work left
+# every value is clipped to [0, 1]: counts at queue_cap jobs, work at queue_cap full-length jobs,
+# so an overloaded system reads as "full" instead of values the network never saw in training
 function observation(env::Env)
     scale = last(job_time)
     next_job = isempty(env.waiting_jobs) ? 0 : first(env.waiting_jobs)
-    obs = Float32[length(env.waiting_jobs), next_job / scale]
+    obs = Float32[min(length(env.waiting_jobs), queue_cap) / queue_cap, min(next_job / scale, 1)]
     for queue in env.resource_queues
-        push!(obs, length(queue), sum(queue; init=0) / scale)
+        push!(obs, min(length(queue), queue_cap) / queue_cap, min(sum(queue; init=0) / (scale * queue_cap), 1))
     end
     return obs
 end
@@ -37,7 +45,7 @@ function reset!(env::Env; SEED::Int=static_SEED)
     foreach(empty!, env.resource_queues)
     env.sequence = env.completed = env.wait_time = env.busy_time = 0
     env.reward = 0.0
-    job_manager!(env.rng, env.waiting_jobs; probability=advance_chance, duration_range=job_time, verbose=false)
+    job_manager!(env.rng, env.waiting_jobs; probability=env.advance_chance, duration_range=env.job_time, verbose=false)
     return observation(env)
 end
 
@@ -58,7 +66,7 @@ function step!(env::Env, action::Int)
     reward = completed - wait_cost * waiting + busy_bonus * busy
     env.reward += reward
 
-    job_manager!(env.rng, env.waiting_jobs; probability=advance_chance, duration_range=job_time, verbose=false)
+    job_manager!(env.rng, env.waiting_jobs; probability=env.advance_chance, duration_range=env.job_time, verbose=false)
     return observation(env), reward, env.sequence >= env.sequence_count
 end
 
@@ -82,6 +90,9 @@ function run_episode(policy, env::Env; SEED::Int=static_SEED)
     end
     return metrics(env)
 end
+
+# one episode per seed; returns each episode's metrics
+evaluate(policy, env::Env; seeds=1:30) = [run_episode(policy, env; SEED) for SEED in seeds]
 
 if abspath(PROGRAM_FILE) == @__FILE__
     env = Env(3, 200)

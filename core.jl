@@ -1,5 +1,6 @@
 using Flux
-using Statistics: mean
+using Statistics: mean, std
+using Printf
 using UnicodePlots
 
 include("env.jl")
@@ -13,8 +14,10 @@ const ε_min = 0.05
 const ε_decay = 10_000
 const clip_norm = 10.0
 episodes = 100
+eval_seeds = 1:30   # training uses seeds 1001 and up
+train_chances = 0.5:0.05:0.8   # each training episode draws its arrival chance from here
 
-## replay entries, q network and the learning step
+## dqn: replay entries, q network and the learning step
 struct Transition
     obs::Vector{Float32}
     action::Int
@@ -27,24 +30,20 @@ end
 q_network(obs_length::Int, resource_count::Int) =
     Chain(Dense(obs_length => 32, relu), Dense(32 => resource_count))
 
-# one gradient step towards r + γ Q_target(next state, a*)
-# dqn: a* = argmax Q_target; double dqn: a* = argmax Q_model, scored by Q_target
-function learn!(model, target, opt_state, batch::Vector{Transition}; double::Bool)
+# one gradient step towards r + γ max Q_target(next state)
+function learn!(model, target, opt_state, batch::Vector{Transition})
     obs = stack(t.obs for t in batch)
     next_obs = stack(t.next_obs for t in batch)
     rewards = Float32[t.reward for t in batch]
     alive = Float32[!t.done for t in batch]
     taken = CartesianIndex.([t.action for t in batch], 1:length(batch))
 
-    next_q = target(next_obs)
-    best = double ? argmax(model(next_obs); dims=1) : argmax(next_q; dims=1)
-    y = rewards .+ γ .* alive .* vec(next_q[best])
+    y = rewards .+ γ .* alive .* vec(maximum(target(next_obs); dims=1))
     grads = Flux.gradient(m -> Flux.huber_loss(m(obs)[taken], y), model)
     Flux.update!(opt_state, model, grads[1])
 end
 
-mutable struct Agent
-    double::Bool
+mutable struct DQNAgent
     rng::MersenneTwister
     model::Chain
     target::Chain
@@ -54,17 +53,18 @@ mutable struct Agent
     episode_rewards::Vector{Float64}
 end
 
-# same seed, same starting weights: the two agents differ only in their target
-function Agent(env::Env; double::Bool)
+function DQNAgent(env::Env)
     Random.seed!(static_SEED)
     model = q_network(length(reset!(env)), length(env.resource_queues))
     opt_state = Flux.setup(OptimiserChain(ClipNorm(clip_norm), Adam(learning_rate)), model)
-    Agent(double, MersenneTwister(static_SEED), model, deepcopy(model), opt_state, Transition[], 0, Float64[])
+    DQNAgent(MersenneTwister(static_SEED), model, deepcopy(model), opt_state, Transition[], 0, Float64[])
 end
 
-function train!(agent::Agent, env::Env, episodes::Int)
+# varied training: a new arrival chance every episode, so the agent sees light and heavy load
+function train!(agent::DQNAgent, env::Env, episodes::Int; chances=train_chances)
     resource_count = length(env.resource_queues)
     for _ in 1:episodes
+        env.advance_chance = rand(agent.rng, chances)
         obs = reset!(env; SEED=1000 + length(agent.episode_rewards) + 1)
         done = false
         while !done
@@ -79,7 +79,7 @@ function train!(agent::Agent, env::Env, episodes::Int)
             agent.steps += 1
 
             length(agent.buffer) >= batch_size &&
-                learn!(agent.model, agent.target, agent.opt_state, rand(agent.rng, agent.buffer, batch_size); agent.double)
+                learn!(agent.model, agent.target, agent.opt_state, rand(agent.rng, agent.buffer, batch_size))
             agent.steps % sync_every == 0 && Flux.loadmodel!(agent.target, agent.model)
         end
         push!(agent.episode_rewards, env.reward)
@@ -87,13 +87,109 @@ function train!(agent::Agent, env::Env, episodes::Int)
     return agent
 end
 
-## build the environment and both agents (rerun to start over)
-env = Env(3, 200)
-agents = ["dqn" => Agent(env; double=false), "double dqn" => Agent(env; double=true)]
+## sac (discrete): an actor, two q networks and a learned temperature α, all trained from the replay buffer
+const initial_α = 0.1
+const target_entropy_ratio = 0.5   # α adjusts so the actor's entropy settles near this share of log(resources)
+
+mutable struct SACAgent
+    rng::MersenneTwister
+    actor::Chain
+    critics::Vector{Chain}
+    targets::Vector{Chain}
+    log_α::Vector{Float32}
+    target_entropy::Float32
+    actor_state::Any
+    critic_states::Vector{Any}
+    α_state::Any
+    buffer::Vector{Transition}
+    steps::Int
+    episode_rewards::Vector{Float64}
+end
+
+function SACAgent(env::Env)
+    Random.seed!(static_SEED)
+    obs_length, resource_count = length(reset!(env)), length(env.resource_queues)
+    actor = q_network(obs_length, resource_count)   # same shape; its outputs are action logits
+    critics = [q_network(obs_length, resource_count) for _ in 1:2]
+    optimiser = OptimiserChain(ClipNorm(clip_norm), Adam(learning_rate))
+    log_α = Float32[log(initial_α)]
+    SACAgent(MersenneTwister(static_SEED), actor, critics, deepcopy.(critics), log_α,
+        target_entropy_ratio * log(resource_count),
+        Flux.setup(optimiser, actor), Any[Flux.setup(optimiser, c) for c in critics],
+        Flux.setup(Adam(learning_rate), log_α), Transition[], 0, Float64[])
+end
+
+# draw an action from the actor's softmax
+function sample_action(rng, logits)
+    p = softmax(logits)
+    return something(findfirst(>=(rand(rng)), cumsum(p)), length(p))
+end
+
+function learn!(agent::SACAgent, batch::Vector{Transition})
+    obs = stack(t.obs for t in batch)
+    next_obs = stack(t.next_obs for t in batch)
+    rewards = Float32[t.reward for t in batch]
+    alive = Float32[!t.done for t in batch]
+    taken = CartesianIndex.([t.action for t in batch], 1:length(batch))
+    α = exp(agent.log_α[1])
+
+    # critics: r + γ Σ π(a'|s') [min Q_target(s', a') − α log π(a'|s')]
+    next_logp = logsoftmax(agent.actor(next_obs))
+    next_q = min.(agent.targets[1](next_obs), agent.targets[2](next_obs))
+    y = rewards .+ γ .* alive .* vec(sum(exp.(next_logp) .* (next_q .- α .* next_logp); dims=1))
+    for (critic, state) in zip(agent.critics, agent.critic_states)
+        grads = Flux.gradient(m -> Flux.huber_loss(m(obs)[taken], y), critic)
+        Flux.update!(state, critic, grads[1])
+    end
+
+    # actor: minimise Σ π(a|s) [α log π(a|s) − min Q(s, a)]
+    q = min.(agent.critics[1](obs), agent.critics[2](obs))
+    actor_grads = Flux.gradient(agent.actor) do m
+        logp = logsoftmax(m(obs))
+        mean(sum(exp.(logp) .* (α .* logp .- q); dims=1))
+    end
+    Flux.update!(agent.actor_state, agent.actor, actor_grads[1])
+
+    # temperature: lower α when the actor is more random than the target entropy, raise it when less
+    logp = logsoftmax(agent.actor(obs))
+    entropy = mean(-sum(exp.(logp) .* logp; dims=1))
+    α_grads = Flux.gradient(la -> exp(la[1]) * (entropy - agent.target_entropy), agent.log_α)
+    Flux.update!(agent.α_state, agent.log_α, α_grads[1])
+end
+
+function train!(agent::SACAgent, env::Env, episodes::Int; chances=train_chances)
+    for _ in 1:episodes
+        env.advance_chance = rand(agent.rng, chances)
+        obs = reset!(env; SEED=1000 + length(agent.episode_rewards) + 1)
+        done = false
+        while !done
+            action = sample_action(agent.rng, agent.actor(obs))
+            next_obs, reward, done = step!(env, action)
+
+            transition = Transition(obs, action, reward, next_obs, done)
+            length(agent.buffer) < buffer_size ? push!(agent.buffer, transition) :
+                (agent.buffer[mod1(agent.steps + 1, buffer_size)] = transition)
+            obs = next_obs
+            agent.steps += 1
+
+            length(agent.buffer) >= batch_size && learn!(agent, rand(agent.rng, agent.buffer, batch_size))
+            if agent.steps % sync_every == 0
+                foreach(Flux.loadmodel!, agent.targets, agent.critics)
+            end
+        end
+        push!(agent.episode_rewards, env.reward)
+    end
+    return agent
+end
+
+## build the environments and both agents (rerun to start over)
+env = Env(3, 200)         # evaluation, nominal workload
+train_env = Env(3, 200)   # training, arrival chance varies per episode
+agents = ["dqn" => DQNAgent(env), "sac" => SACAgent(env)]
 
 ## train (rerun to keep training the same agents)
 for (_, agent) in agents
-    train!(agent, env, episodes)
+    train!(agent, train_env, episodes)
 end
 
 ## training summary
@@ -104,14 +200,63 @@ for (name, agent) in agents
 end
 
 ## compare the trained agents with the baselines
-greedy_policy(model) = env -> argmax(model(observation(env)))
+# evaluation is greedy for both: the best q-value, or the actor's most likely action
+greedy_policy(agent::DQNAgent) = env -> argmax(agent.model(observation(env)))
+greedy_policy(agent::SACAgent) = env -> argmax(agent.actor(observation(env)))
 
-results = [name => run_episode(policy, env)
+results = [name => evaluate(policy, env; seeds=eval_seeds)
            for (name, policy) in ["random" => random_policy(MersenneTwister(static_SEED)),
                                   "round-robin" => round_robin(),
                                   "shortest-queue" => shortest_queue,
-                                  [name => greedy_policy(agent.model) for (name, agent) in agents]...]]
-foreach(((name, m),) -> println(rpad(name, 16), m), results)
+                                  [name => greedy_policy(agent) for (name, agent) in agents]...]]
+
+# mean ± 95% confidence interval over the evaluation seeds
+ci95(x) = 1.96 * std(x) / sqrt(length(x))
+column(runs, metric) = getfield.(runs, metric)
+report_metrics = [:reward, :mean_wait, :utilization, :completed]
+
+println("mean ± 95% CI over $(length(eval_seeds)) evaluation seeds")
+@printf("%-16s%18s%18s%18s%18s\n", "policy", report_metrics...)
+for (name, runs) in results
+    @printf("%-16s", name)
+    foreach(m -> @printf("%18s", @sprintf("%.2f ± %.2f", mean(column(runs, m)), ci95(column(runs, m)))), report_metrics)
+    println()
+end
+
+# same seeds for every policy, so compare per seed against the strongest baseline
+baseline = Dict(results)["shortest-queue"]
+println("\nreward minus shortest-queue, same seed")
+for (name, runs) in results
+    name == "shortest-queue" && continue
+    diff = column(runs, :reward) .- column(baseline, :reward)
+    @printf("%-16s%8.2f ± %.2f   (better on %d/%d seeds)\n", name, mean(diff), ci95(diff), count(>(0), diff), length(diff))
+end
+
+## generalization: same trained agents on a heavier workload they never saw
+# 0.8 × 4.5 = 3.6 units of work per sequence against a capacity of 3 (about 120% load)
+shifted_env = Env(3, 200; advance_chance=0.8, job_time=3:6)
+shifted_results = [name => evaluate(policy, shifted_env; seeds=eval_seeds)
+                   for (name, policy) in ["random" => random_policy(MersenneTwister(static_SEED)),
+                                          "round-robin" => round_robin(),
+                                          "shortest-queue" => shortest_queue,
+                                          [name => greedy_policy(agent) for (name, agent) in agents]...]]
+
+println("\nshifted workload: advance_chance $(shifted_env.advance_chance), job_time $(shifted_env.job_time)")
+println("mean ± 95% CI over $(length(eval_seeds)) evaluation seeds")
+@printf("%-16s%18s%18s%18s%18s\n", "policy", report_metrics...)
+for (name, runs) in shifted_results
+    @printf("%-16s", name)
+    foreach(m -> @printf("%18s", @sprintf("%.2f ± %.2f", mean(column(runs, m)), ci95(column(runs, m)))), report_metrics)
+    println()
+end
+
+shifted_baseline = Dict(shifted_results)["shortest-queue"]
+println("\nshifted reward minus shortest-queue, same seed")
+for (name, runs) in shifted_results
+    name == "shortest-queue" && continue
+    diff = column(runs, :reward) .- column(shifted_baseline, :reward)
+    @printf("%-16s%8.2f ± %.2f   (better on %d/%d seeds)\n", name, mean(diff), ci95(diff), count(>(0), diff), length(diff))
+end
 
 ## visual: training reward per episode, 10-episode moving average
 moving_mean(r) = [mean(r[max(1, i - 9):i]) for i in eachindex(r)]
@@ -128,5 +273,16 @@ for (metric, label) in [:reward => "cumulative reward",
                         :mean_wait => "mean wait (sequences)",
                         :utilization => "utilization",
                         :completed => "jobs completed"]
-    display(barplot(policy_names, [getfield(m, metric) for (_, m) in results]; title=label, width=40))
+    display(barplot(policy_names, [mean(column(runs, metric)) for (_, runs) in results];
+        title="$label, mean of $(length(eval_seeds)) seeds", width=40))
+end
+
+## visual: nominal against shifted workload (barplot needs values ≥ 0, so no reward here)
+for (metric, label) in [:mean_wait => "mean wait (sequences)", :completed => "jobs completed"]
+    labels, values = String[], Float64[]
+    for ((name, nominal), (_, shifted)) in zip(results, shifted_results)
+        push!(labels, "$name (nominal)", "$name (shifted)")
+        push!(values, mean(column(nominal, metric)), mean(column(shifted, metric)))
+    end
+    display(barplot(labels, values; title="$label: nominal vs shifted", width=40))
 end
