@@ -24,9 +24,6 @@ Env(resource_count::Int, sequence_count::Int;
     Env(MersenneTwister(static_SEED), advance_chance, job_time, Int[], [Int[] for _ in 1:resource_count],
         0, sequence_count, 0, 0, 0, 0.0)
 
-# state: waiting count, next job's duration, then per resource its queue length and work left
-# every value is clipped to [0, 1]: counts at queue_cap jobs, work at queue_cap full-length jobs,
-# so an overloaded system reads as "full" instead of values the network never saw in training
 function observation(env::Env)
     scale = last(job_time)
     next_job = isempty(env.waiting_jobs) ? 0 : first(env.waiting_jobs)
