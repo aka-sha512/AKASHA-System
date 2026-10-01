@@ -1,0 +1,13 @@
+                             mean wait (sequences): nominal vs shifted 
+                            ┌                                        ┐ 
+           random (nominal) ┤■■■■■■ 4.27925                            
+           random (shifted) ┤■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■ 20.9895   
+      round-robin (nominal) ┤■■ 1.55982                                
+      round-robin (shifted) ┤■■■■■■■■■■■■■■■■■■■■■■■■■ 17.1132         
+   shortest-queue (nominal) ┤■ 0.587402                                
+   shortest-queue (shifted) ┤■■■■■■■■■■■■■■■■■■■■■■■■ 16.3441          
+              dqn (nominal) ┤■ 0.584459                                
+              dqn (shifted) ┤■■■■■■■■■■■■■■■■■■■■■■■■■ 17.03           
+              sac (nominal) ┤■ 0.480628                                
+              sac (shifted) ┤■■■■■■■■■■■■■■■■■■■■■■■■■ 16.6818         
+                            └                                        ┘ 

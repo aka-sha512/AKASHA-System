@@ -1,0 +1,8 @@
+                    mean wait (sequences), mean of 30 seeds  
+                  ┌                                        ┐ 
+           random ┤■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■ 4.27925   
+      round-robin ┤■■■■■■■■■■■ 1.55982                       
+   shortest-queue ┤■■■■ 0.587402                             
+              dqn ┤■■■■ 0.584459                             
+              sac ┤■■■ 0.480628                              
+                  └                                        ┘ 
