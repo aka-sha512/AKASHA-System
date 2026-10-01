@@ -230,10 +230,10 @@ results = [name => evaluate(policy, env; seeds=eval_seeds)
 # mean ± 95% confidence interval over the evaluation seeds
 ci95(x) = 1.96 * std(x) / sqrt(length(x))
 column(runs, metric) = getfield.(runs, metric)
-report_metrics = [:reward, :mean_wait, :utilization, :completed]
+report_metrics = [:reward, :mean_wait, :mean_completion, :utilization, :completed]
 
 println("mean ± 95% CI over $(length(eval_seeds)) evaluation seeds")
-@printf("%-16s%18s%18s%18s%18s\n", "policy", report_metrics...)
+@printf("%-16s", "policy"); foreach(m -> @printf("%18s", m), report_metrics); println()
 for (name, runs) in results
     @printf("%-16s", name)
     foreach(m -> @printf("%18s", @sprintf("%.2f ± %.2f", mean(column(runs, m)), ci95(column(runs, m)))), report_metrics)
@@ -260,7 +260,7 @@ shifted_results = [name => evaluate(policy, shifted_env; seeds=eval_seeds)
 
 println("\nshifted workload: advance_chance $(shifted_env.advance_chance), job_time $(shifted_env.job_time)")
 println("mean ± 95% CI over $(length(eval_seeds)) evaluation seeds")
-@printf("%-16s%18s%18s%18s%18s\n", "policy", report_metrics...)
+@printf("%-16s", "policy"); foreach(m -> @printf("%18s", m), report_metrics); println()
 for (name, runs) in shifted_results
     @printf("%-16s", name)
     foreach(m -> @printf("%18s", @sprintf("%.2f ± %.2f", mean(column(runs, m)), ci95(column(runs, m)))), report_metrics)
@@ -298,6 +298,7 @@ show_and_save(reward_plot, "training_reward")
 policy_names = first.(results)
 for (metric, label) in [:reward => "cumulative reward",
                         :mean_wait => "mean wait (sequences)",
+                        :mean_completion => "mean completion time (sequences)",
                         :utilization => "utilization",
                         :completed => "jobs completed"]
     show_and_save(barplot(policy_names, [mean(column(runs, metric)) for (_, runs) in results];
@@ -305,7 +306,10 @@ for (metric, label) in [:reward => "cumulative reward",
 end
 
 ## visual: nominal against shifted workload (barplot needs values ≥ 0, so no reward here)
-for (metric, label) in [:mean_wait => "mean wait (sequences)", :completed => "jobs completed"]
+for (metric, label) in [
+    :mean_wait => "mean wait (sequences)",
+    :mean_completion => "mean completion time (sequences)",
+    :completed => "jobs completed"]
     labels, values = String[], Float64[]
     for ((name, nominal), (_, shifted)) in zip(results, shifted_results)
         push!(labels, "$name (nominal)", "$name (shifted)")

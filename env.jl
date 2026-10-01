@@ -69,6 +69,7 @@ end
 metrics(env::Env) = (
     completed=env.completed,
     mean_wait=env.wait_time / max(env.completed, 1),
+    mean_completion=(env.wait_time + env.busy_time) / max(env.completed, 1),
     utilization=env.busy_time / (length(env.resource_queues) * env.sequence),
     reward=env.reward,
 )

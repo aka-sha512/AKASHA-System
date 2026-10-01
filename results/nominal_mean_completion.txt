@@ -1,0 +1,8 @@
+                  mean completion time (sequences), mean of 30 seeds 
+                  ┌                                        ┐ 
+           random ┤■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■ 7.78111   
+      round-robin ┤■■■■■■■■■■■■■■■■■■■■ 5.08178              
+   shortest-queue ┤■■■■■■■■■■■■■■■■ 4.11673                  
+              dqn ┤■■■■■■■■■■■■■■■■ 4.11064                  
+              sac ┤■■■■■■■■■■■■■■■■ 4.0059                   
+                  └                                        ┘ 
