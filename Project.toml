@@ -1,2 +1,3 @@
 [deps]
 Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
+UnicodePlots = "b8865327-cd53-5732-bb35-84acbb429228"
