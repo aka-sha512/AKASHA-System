@@ -2,6 +2,8 @@ using Flux
 using Statistics: mean, std
 using Printf
 using UnicodePlots
+using FileIO, FreeType   # lets UnicodePlots' savefig write PNG
+using Serialization
 
 include("env.jl")
 
@@ -16,6 +18,8 @@ const clip_norm = 10.0
 episodes = 100
 eval_seeds = 1:30   # training uses seeds 1001 and up
 train_chances = 0.5:0.05:0.8   # each training episode draws its arrival chance from here
+model_dir = "artifacts"   # trained networks, one .jls per agent
+plot_dir = "results"      # every chart as .png and .txt
 
 ## dqn: replay entries, q network and the learning step
 struct Transition
@@ -199,10 +203,23 @@ for (name, agent) in agents
         "$(round(mean(r[1:10]); digits=1)), last 10 $(round(mean(r[end-9:end]); digits=1)), worst $(round(minimum(r); digits=1))")
 end
 
+## save the trained models
+# the network that picks actions: dqn's q network, sac's actor
+policy_network(agent::DQNAgent) = agent.model
+policy_network(agent::SACAgent) = agent.actor
+
+mkpath(model_dir)
+for (name, agent) in agents
+    path = joinpath(model_dir, replace(name, " " => "_") * ".jls")
+    serialize(path, (network=policy_network(agent), episode_rewards=agent.episode_rewards, steps=agent.steps))
+    println("saved $path")
+end
+# reload later with: network_policy(deserialize("artifacts/dqn.jls").network)
+
 ## compare the trained agents with the baselines
 # evaluation is greedy for both: the best q-value, or the actor's most likely action
-greedy_policy(agent::DQNAgent) = env -> argmax(agent.model(observation(env)))
-greedy_policy(agent::SACAgent) = env -> argmax(agent.actor(observation(env)))
+network_policy(network) = env -> argmax(network(observation(env)))
+greedy_policy(agent) = network_policy(policy_network(agent))
 
 results = [name => evaluate(policy, env; seeds=eval_seeds)
            for (name, policy) in ["random" => random_policy(MersenneTwister(static_SEED)),
@@ -258,14 +275,24 @@ for (name, runs) in shifted_results
     @printf("%-16s%8.2f ± %.2f   (better on %d/%d seeds)\n", name, mean(diff), ci95(diff), count(>(0), diff), length(diff))
 end
 
+## visuals: shown here and written to plot_dir
+mkpath(plot_dir)
+function show_and_save(plot, name)
+    display(plot)
+    for ext in ("png", "txt")
+        savefig(plot, joinpath(plot_dir, "$name.$ext"))
+    end
+end
+
 ## visual: training reward per episode, 10-episode moving average
 moving_mean(r) = [mean(r[max(1, i - 9):i]) for i in eachindex(r)]
 reward_plot = lineplot(moving_mean(last(agents[1]).episode_rewards); name=first(agents[1]),
-    title="training reward (10-episode mean)", xlabel="episode", ylabel="reward", width=60, height=15)
+    title="training reward (10-episode mean)", xlabel="episode", ylabel="reward", width=60, height=15,
+    canvas=AsciiCanvas)   # the png font has no braille, the default canvas
 for (name, agent) in agents[2:end]
     lineplot!(reward_plot, moving_mean(agent.episode_rewards); name)
 end
-display(reward_plot)
+show_and_save(reward_plot, "training_reward")
 
 ## visual: each policy against each metric
 policy_names = first.(results)
@@ -273,8 +300,8 @@ for (metric, label) in [:reward => "cumulative reward",
                         :mean_wait => "mean wait (sequences)",
                         :utilization => "utilization",
                         :completed => "jobs completed"]
-    display(barplot(policy_names, [mean(column(runs, metric)) for (_, runs) in results];
-        title="$label, mean of $(length(eval_seeds)) seeds", width=40))
+    show_and_save(barplot(policy_names, [mean(column(runs, metric)) for (_, runs) in results];
+        title="$label, mean of $(length(eval_seeds)) seeds", width=40), "nominal_$metric")
 end
 
 ## visual: nominal against shifted workload (barplot needs values ≥ 0, so no reward here)
@@ -284,5 +311,5 @@ for (metric, label) in [:mean_wait => "mean wait (sequences)", :completed => "jo
         push!(labels, "$name (nominal)", "$name (shifted)")
         push!(values, mean(column(nominal, metric)), mean(column(shifted, metric)))
     end
-    display(barplot(labels, values; title="$label: nominal vs shifted", width=40))
+    show_and_save(barplot(labels, values; title="$label: nominal vs shifted", width=40), "shifted_$metric")
 end

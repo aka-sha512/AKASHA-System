@@ -25,7 +25,6 @@ Env(resource_count::Int, sequence_count::Int;
         0, sequence_count, 0, 0, 0, 0.0)
 
 # state: waiting count, next job's duration, then per resource its queue length and work left
-# state: waiting count, next job's duration, then per resource its queue length and work left
 # every value is clipped to [0, 1]: counts at queue_cap jobs, work at queue_cap full-length jobs,
 # so an overloaded system reads as "full" instead of values the network never saw in training
 function observation(env::Env)
