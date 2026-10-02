@@ -1,3 +1,4 @@
+using Pkg; Pkg.activate(@__DIR__)
 using Flux
 using Statistics: mean, std
 using Printf
@@ -65,11 +66,16 @@ function DQNAgent(env::Env)
 end
 
 # varied training: a new arrival chance every episode, so the agent sees light and heavy load
+# episode k's seed and arrival chance depend only on k, so every agent trains on the same workloads
+function start_training_episode!(env::Env, episode::Int, chances)
+    env.advance_chance = rand(MersenneTwister(1000 + episode), chances)
+    return reset!(env; SEED=1000 + episode)
+end
+
 function train!(agent::DQNAgent, env::Env, episodes::Int; chances=train_chances)
     resource_count = length(env.resource_queues)
     for _ in 1:episodes
-        env.advance_chance = rand(agent.rng, chances)
-        obs = reset!(env; SEED=1000 + length(agent.episode_rewards) + 1)
+        obs = start_training_episode!(env, length(agent.episode_rewards) + 1, chances)
         done = false
         while !done
             ε = max(ε_min, 1 - agent.steps / ε_decay)
@@ -163,8 +169,7 @@ end
 
 function train!(agent::SACAgent, env::Env, episodes::Int; chances=train_chances)
     for _ in 1:episodes
-        env.advance_chance = rand(agent.rng, chances)
-        obs = reset!(env; SEED=1000 + length(agent.episode_rewards) + 1)
+        obs = start_training_episode!(env, length(agent.episode_rewards) + 1, chances)
         done = false
         while !done
             action = sample_action(agent.rng, agent.actor(obs))

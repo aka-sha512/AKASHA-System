@@ -1,13 +1,13 @@
                             mean completion time (sequences): nominal vs shifted 
                             ┌                                        ┐ 
-           random (nominal) ┤■■■■■■■■■■ 7.78111                        
-           random (shifted) ┤■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■ 25.3005   
+           random (nominal) ┤■■■■■■■■■ 7.78111                         
+           random (shifted) ┤■■■■■■■■■■■■■■■■■■■■■■■■■■■■ 25.3005      
       round-robin (nominal) ┤■■■■■■ 5.08178                            
-      round-robin (shifted) ┤■■■■■■■■■■■■■■■■■■■■■■■■■■ 21.4404        
+      round-robin (shifted) ┤■■■■■■■■■■■■■■■■■■■■■■■■ 21.4404          
    shortest-queue (nominal) ┤■■■■■ 4.11673                             
-   shortest-queue (shifted) ┤■■■■■■■■■■■■■■■■■■■■■■■■■ 20.6794         
-              dqn (nominal) ┤■■■■■ 4.11064                             
-              dqn (shifted) ┤■■■■■■■■■■■■■■■■■■■■■■■■■■ 21.3842        
-              sac (nominal) ┤■■■■■ 4.0059                              
-              sac (shifted) ┤■■■■■■■■■■■■■■■■■■■■■■■■■■ 21.0471        
+   shortest-queue (shifted) ┤■■■■■■■■■■■■■■■■■■■■■■■ 20.6794           
+              dqn (nominal) ┤■■■■ 4.03959                              
+              dqn (shifted) ┤■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■ 28.1067   
+              sac (nominal) ┤■■■■■ 4.09241                             
+              sac (shifted) ┤■■■■■■■■■■■■■■■■■■■■■■■ 20.9529           
                             └                                        ┘ 
